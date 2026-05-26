@@ -1,179 +1,145 @@
-# blink-setup-cameras
+# blink-geofence
 
-![blink-setup-cameras](assets/hero.png)
+![blink-geofence](assets/hero.png)
 
-**Automatización local para armar/desarmar cámaras Blink según tu presencia en casa, con vigilancia nocturna forzada. 100% local: sin IFTTT, sin Alexa, sin servicios de terceros ni costes.**
+**Local geofencing for Amazon Blink cameras on macOS. Your cameras disarm when you get home and re-arm when you leave — no IFTTT, no Alexa, no cloud, no subscription.**
 
-> Si llegas al proyecto sin contexto, lee primero **[HANDOFF.md](HANDOFF.md)** — explica qué hay corriendo en el Mac, cómo verificarlo y cómo desinstalarlo. Este README es la guía de uso operativa.
+`No cloud` · `No subscription` · `100% local` · `macOS`
 
-Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Dos **guards** fuerzan armado pese al desarmado: la **franja nocturna 01:00–09:00** y la **ausencia de casa** (Mac fuera de la red de casa). Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
+Blink has no real geofencing. The result is the classic annoyance: motion notifications while you're at home, or cameras that never arm when you leave. **blink-geofence** fixes that with a small local setup: a macOS Shortcuts automation detects when your Mac joins your home Wi-Fi and offers to disarm your cameras for a few hours; a background LaunchAgent re-arms them automatically and *forces* arming during a night window or whenever you're away from home.
 
-> ⚠️ Limitación: el enforcement corre en este Mac; si está en sleep profundo no se aplica hasta que despierte. El backstop es un **schedule nativo de Blink "Arm 01:00"** (configurado en la app, corre en la nube), que garantiza el armado nocturno aunque el Mac esté dormido. Detalle en [HANDOFF.md](HANDOFF.md).
+> ⚠️ **Disclaimer.** This project is **not affiliated with Amazon or Blink**. It relies on an **unofficial API** (via [`blinkpy`](https://github.com/fronzbot/blinkpy)) that Amazon can change or break at any time, and automated use could get your account flagged. Provided **AS IS, with no warranty**. **Do not rely on it for life-safety or critical security** — it is a convenience layer, not an alarm system. See [Limitations](#limitations).
 
-## Arquitectura
+## Why this vs. the alternatives
+
+| | blink-geofence | IFTTT | Alexa Routines | Home Assistant |
+|---|---|---|---|---|
+| No cloud account required | ✅ | ❌ | ❌ | ⚠️ |
+| Cost | Free | Paid tier | Free* | 24/7 server |
+| Forced night-time arming | ✅ | ❌ | ❌ | Manual |
+| Away-from-home arming | ✅ | ⚠️ | ⚠️ | ✅ |
+| Setup | A few commands | OK | OK | Hours |
+
+## How it works
 
 ```
-WiFi MyHomeWiFi detectado (trigger nativo de Shortcuts.app)
-   └─→ Atajo macOS muestra diálogo "¿Desarmar Blink 5h?"
-         └─→ run.sh disarm-for 5
-               ├─→ Desarma Living Room (vía blinkpy)
-               └─→ Escribe ~/.config/blink/rearm_at con timestamp +5h
+You join your home Wi-Fi  (macOS Shortcuts automation)
+  └─→ Native dialog: "Disarm cameras for 5h?"
+        └─→ run.sh disarm-for 5
+              ├─→ Disarms your target sync module(s) (via blinkpy)
+              └─→ Writes ~/.config/blink/rearm_at (timestamp +5h)
 
-LaunchAgent blink-geofence cada 5 minutos
-   └─→ run.sh enforce-policy   (prioridad de arriba a abajo)
-         ├─→ ¿01:00-09:00?        → ARMA (anula desarmado)
-         ├─→ ¿fuera de casa?      → ARMA (anula desarmado)
-         ├─→ ¿rearm_at vencido?   → ARMA + borra archivo
-         └─→ nada aplica          → respeta el desarmado en curso
+LaunchAgent "blink-geofence", every 5 minutes
+  └─→ run.sh enforce-policy        (top-to-bottom priority)
+        ├─→ In night window?        → ARM (overrides disarm)
+        ├─→ Away from home?         → ARM (overrides disarm)
+        ├─→ rearm_at expired?       → ARM + clear file
+        └─→ nothing applies         → respect the current disarm
 ```
 
-## Comportamiento en un día típico
+Presence is detected by the **router's MAC address** (via `arp`), not the SSID, because recent macOS redacts the SSID without Location permissions while the gateway MAC is not redacted.
 
-| Momento | Estado de `Living Room` | Quién lo decide |
-|---|---|---|
-| Llegas a casa (te unes al WiFi) | Diálogo "¿Desarmar 5h?" → si aceptas, **desarmado** | Atajo Shortcuts + MacBook |
-| En casa, de día | **desarmado** (sin notificaciones molestas) | — |
-| Sales de casa (dejas el WiFi) | **armado** (guard de presencia) | MacBook, si está despierto |
-| **01:00** | **armado** siempre | Blink (nube) + refuerzo MacBook |
-| 01:00–09:00 | **armado** siempre | Blink + MacBook |
-| Pasan las 5h de un desarmado | **armado** (rearmado) | MacBook, si está despierto |
-| Por la mañana en casa | sigue **armado** hasta que lo desarmes a mano | ver nota abajo |
+## Requirements
 
-> **Nota de diseño**: el schedule de Blink arma a la 01:00 pero **no desarma**. Por la mañana, estando en casa, las cámaras siguen armadas y pueden darte notificaciones al moverte, hasta que las desarmes (el atajo solo salta al *unirte* al WiFi, no estando ya conectado). Desármalas a mano (`./run.sh disarm` o ejecutando el atajo manualmente) o pídeme que añada la regla "al despertar en casa → desarmar".
+- macOS (uses Shortcuts.app + launchd)
+- Python 3.11+
+- An Amazon Blink account with at least one Sync Module
 
-## Stack
-
-| Capa | Componente |
-|---|---|
-| API Blink | `blinkpy 0.25.5` (OAuth v2 con 2FA) |
-| SSL | `certifi` (macOS Python no trae CA bundle) |
-| Trigger WiFi | `Shortcuts.app` nativa (sin daemons extra) |
-| Confirmación | Diálogo modal nativo (acción "Choose from Menu") |
-| Presencia | MAC del router vía `arp` (el SSID está censurado por macOS) |
-| Guards + rearmado | LaunchAgent local (`enforce-policy`), poll cada 5 min |
-| Storage | `~/.config/blink/` (session, targets, home_network, rearm_at, logs) |
-
-## Setup local (este Mac, una vez)
+## Install
 
 ```bash
-cd ~/Desarrollo/blink-setup-cameras
+git clone https://github.com/<you>/blink-geofence.git
+cd blink-geofence
 
-# 1. Instalar dependencias en venv
+# 1. Dependencies in a venv
 ./install.sh
 
-# 2. Autenticarte con Blink (interactivo: email + password + código 2FA)
+# 2. Authenticate with Blink (interactive: email + password + 2FA code)
 ./run.sh setup
 
-# 3. Configurar qué sync modules controlan arm/disarm
-./run.sh status                          # ver todos los sync modules
-./run.sh targets "Living Room"      # solo este responderá al trigger
+# 3. Choose which sync modules this tool may control (others are NEVER touched)
+./run.sh status                      # list all sync modules in your account
+./run.sh targets "Living Room"       # only these respond to arm/disarm
 
-# 4. Guardar la huella de la red de casa (ejecutar CONECTADO al WiFi de casa)
-./run.sh set-home                        # guarda la MAC del router como "casa"
+# 4. Save your home network fingerprint (run while connected to home Wi-Fi)
+./run.sh set-home
 
-# 5. Probar el ciclo manualmente
-./run.sh disarm-for 0.001                # desarma + rearmado a ~3.6s
-./run.sh status                          # muestra disarmed + rearmado + guards
-sleep 5
-./run.sh enforce-policy                  # aplica guards / rearmado
-./run.sh status                          # vuelve a armed
-
-# 6. Instalar el LaunchAgent (enforce-policy cada 5 min)
+# 5. Install the background enforcement (every 5 min)
 ./install-launchagent.sh
 ```
 
-## Atajo macOS Shortcuts.app
+## macOS Shortcuts automation
 
-Abre **Shortcuts.app → sidebar "Automatización" → "+"** y configura:
+Open **Shortcuts.app → Automation → +** and configure:
 
-### Trigger
+**Trigger:** Wi-Fi → your home network → *When joined* → **Run immediately**.
 
-| Campo | Valor |
+**Actions:**
+1. **Choose from Menu** — prompt `Disarm cameras for 5h?`, options `Yes, disarm 5h` / `No, keep armed`.
+2. Under *Yes*: **Run Shell Script** → `/full/path/to/blink-geofence/run.sh disarm-for 5`
+3. *(optional)* Under *Yes*: **Show Notification** confirming the action.
+
+The first time it runs, macOS asks permission to run shell scripts — accept once.
+
+## Commands
+
+| Command | What it does |
 |---|---|
-| Tipo | **Wi-Fi** |
-| Red | `MyHomeWiFi` |
-| Disparar | **Cuando se una a esta red** |
-| Ejecución | **Ejecutar inmediatamente** (no pedir confirmación del atajo — el atajo ya pregunta por su cuenta) |
+| `./run.sh setup` | Interactive Blink auth (email + password + 2FA) |
+| `./run.sh targets ["<name>" ...]` | No args: show targets. With args: set them. |
+| `./run.sh set-home` | Save the current router MAC as the home network |
+| `./run.sh status` | Sync module state + pending re-arm + guard state |
+| `./run.sh arm` / `disarm` | Arm / disarm targets now |
+| `./run.sh disarm-for <hours>` | Disarm + schedule re-arm in N hours |
+| `./run.sh enforce-policy` | (LaunchAgent) Apply guards: night window, presence, re-arm |
 
-### Acciones
+## Configuration
 
-**1. "Choose from Menu"** (Elegir del menú)
-- Prompt: `¿Desactivar Blink Living Room 5h?`
-- Opciones:
-  - `Sí, desactivar 5h`
-  - `No, dejar armado`
+Optional `~/.config/blink/config.json` (sensible defaults if absent):
 
-**2. Bajo la rama "Sí, desactivar 5h": "Run Shell Script"** (Ejecutar script de shell)
-- Shell: `/bin/zsh`
-- Pass input: `to script as arguments` (no importa, no usa stdin)
-- Script:
-  ```
-  /path/to/blink-geofence/run.sh disarm-for 5
-  ```
-
-**3. (opcional) Bajo "Sí, desactivar 5h": "Show Notification"**
-- Title: `Blink`
-- Body: `Living Room desarmado 5h. Rearmado automático al vencer.`
-
-La rama "No, dejar armado" queda vacía (no hacer nada).
-
-### Primera ejecución
-
-La primera vez que el atajo dispare, macOS te pedirá permiso para "Run Shell Script". Acepta. Después funciona en silencio.
-
-Si quieres probarlo sin esperar a llegar a casa: abre la app Shortcuts, busca tu automatización en la lista, y dale al botón "Run" manualmente.
-
-## Comandos
-
-| Comando | Qué hace |
-|---|---|
-| `./run.sh setup` | Auth interactiva con Blink (email + password + 2FA) |
-| `./run.sh targets ["<nombre>" ...]` | Sin args: muestra targets. Con args: los sobreescribe. |
-| `./run.sh set-home` | Guarda la MAC del router actual como huella de la red de casa |
-| `./run.sh status` | Estado de sync modules + rearmado pendiente + estado de los guards |
-| `./run.sh arm` | Arma targets ahora |
-| `./run.sh disarm` | Desarma targets ahora |
-| `./run.sh disarm-for <horas>` | Desarma + programa rearmado en N horas |
-| `./run.sh enforce-policy` | (interno, lo llama el LaunchAgent) Aplica guards: franja nocturna, presencia, rearmado |
-| `./run.sh check-rearm` | (legacy) Solo el rearmado por tiempo, sin guards |
-
-## Archivos
-
-| Path | Contenido |
-|---|---|
-| `~/.config/blink/session.json` | Sesión OAuth Blink (chmod 600) |
-| `~/.config/blink/targets.json` | Lista de sync modules controlados |
-| `~/.config/blink/home_network.json` | MAC del router de casa para detectar presencia |
-| `~/.config/blink/rearm_at` | Timestamp ISO de cuándo rearmar (existe solo si hay disarm-for activo) |
-| `~/.config/blink/blink.log` | Log de operaciones de blink_control.py |
-| `~/.config/blink/launchagent.{out,err}` | Stdout/stderr del LaunchAgent |
-| `~/Library/LaunchAgents/blink-geofence.plist` | Definición del LaunchAgent |
-
-## Desinstalar
-
-```bash
-# Quitar el LaunchAgent
-launchctl bootout "gui/$UID/blink-geofence"
-rm ~/Library/LaunchAgents/blink-geofence.plist
-
-# Borrar config (opcional)
-rm -rf ~/.config/blink
-
-# Quitar el atajo: Shortcuts.app → click derecho en la automatización → Borrar
+```json
+{
+  "night_start": "01:00",
+  "night_end": "09:00",
+  "disarm_hours": 5
+}
 ```
 
-## Troubleshooting
+During `night_start`–`night_end` the cameras are force-armed regardless of any active disarm. Align this with a native **"Arm" schedule in the Blink app** as a robust backstop (see Limitations).
 
-| Síntoma | Causa probable | Solución |
-|---|---|---|
-| `ERROR [BlinkTwoFARequiredError]` en `setup` | Primera vez, normal | El script lo gestiona automáticamente: pega el código 2FA |
-| `CERTIFICATE_VERIFY_FAILED` | Python sin CA bundle | Ya resuelto (`certifi` + SSL context custom) |
-| `No hay sesión guardada` | Falta el primer `setup` | `./run.sh setup` |
-| `No hay targets configurados` | Falta `targets` | `./run.sh targets "Living Room"` |
-| Atajo no dispara al unirse al WiFi | Permisos no aceptados o "Ejecutar inmediatamente" desactivado | Shortcuts.app → revisar la automatización |
-| El rearmado no sucede a las 5h | LaunchAgent no cargado o sesión Blink caducada | `launchctl print gui/$UID/blink-geofence` para diagnosticar; mirar `launchagent.err` |
-| Sesión Blink caduca (raro, dura meses) | Token expiró | `./run.sh setup` de nuevo |
-| `status` dice "FUERA de casa" estando en casa | Cambiaste de router o la huella es vieja | `./run.sh set-home` conectado al WiFi de casa |
-| Se arma sola al instalar disarm-for | Estás en franja 01:00–09:00 o fuera de casa (guard correcto) | Es el comportamiento esperado; revisa `./run.sh status` → sección Guards |
-| Quiero cambiar la franja nocturna | Horas hardcodeadas | Edita `FORCED_ARM_START`/`FORCED_ARM_END` en `blink_control.py` |
-| La franja nocturna no arma con el Mac dormido | launchd no corre en sleep profundo | Configura el schedule nativo de Blink (ver HANDOFF, sección "Mac dormido") |
+## Limitations
+
+- **Mac asleep = no enforcement.** All logic runs on your Mac; launchd does not fire during deep sleep, only on wake. If you disarm at night and close the lid, the night window won't be enforced until the Mac wakes. **Backstop:** create a native *"Arm"* schedule in the Blink app (runs in Blink's cloud, independent of your Mac). `blinkpy` cannot create schedules via API, so this is a one-time manual step in the app.
+- **Fail-open today.** If `enforce-policy` errors (expired token, Blink API down), it logs and exits without changing state — cameras stay as they were. A security-conscious deployment should treat any failure as "keep armed" and notify; that hardening is on the roadmap.
+- **Presence is spoofable.** The gateway MAC can be faked by an attacker in range. Low-probability vector, but real.
+- **Unofficial API.** Amazon can break `blinkpy` or flag automated accounts without notice.
+
+## Security & privacy
+
+- Blink session tokens live in `~/.config/blink/session.json` (chmod 600). An attacker with access to your Mac (or an unencrypted backup) could control your cameras. Encrypt your backups.
+- Never commit `~/.config/blink/` — it is outside the repo and git-ignored by design.
+
+## Files
+
+| Path | Contents |
+|---|---|
+| `~/.config/blink/session.json` | Blink OAuth session (chmod 600) |
+| `~/.config/blink/targets.json` | Sync modules under control |
+| `~/.config/blink/home_network.json` | Home router MAC for presence |
+| `~/.config/blink/config.json` | Night window + default disarm hours |
+| `~/.config/blink/rearm_at` | Pending re-arm timestamp (only while a disarm-for is active) |
+| `~/.config/blink/blink.log` | Operation log |
+| `~/Library/LaunchAgents/blink-geofence.plist` | LaunchAgent definition |
+
+## Uninstall
+
+```bash
+launchctl bootout "gui/$UID/blink-geofence"
+rm ~/Library/LaunchAgents/blink-geofence.plist
+rm -rf ~/.config/blink          # optional: removes session + config
+# Remove the Shortcuts automation in Shortcuts.app
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE). This software is not affiliated with Amazon or Blink.

@@ -1,35 +1,38 @@
 #!/usr/bin/env python3
 """
-blink_control.py — Control programático de cámaras Blink.
+blink_control.py — Local geofencing control for Blink cameras.
 
-Forma parte del proyecto blink-setup-cameras. Sirve dos roles:
+Part of the blink-geofence project. Two roles:
 
-  1) CLI manual desde Terminal (./run.sh <comando>).
-  2) Backend invocado por:
-       - El atajo macOS "Blink: llegada a casa" (Shortcuts.app) cuando
-         detecta que el Mac se ha unido al WiFi MyHomeWiFi.
-       - El LaunchAgent "blink-geofence" que cada 5 minutos
-         verifica si hay un rearmado pendiente de vencimiento.
+  1) Manual CLI from a terminal (./run.sh <command>).
+  2) Backend invoked by:
+       - A macOS Shortcuts.app automation that fires when the Mac joins your
+         home Wi-Fi network, offering to disarm the cameras for a while.
+       - A LaunchAgent that runs every few minutes to enforce the policy
+         (re-arm when due, force-arm at night or when away from home).
 
-Identificadores clave (búscalos en el sistema):
-  - LaunchAgent label:   blink-geofence
-  - LaunchAgent plist:   ~/Library/LaunchAgents/blink-geofence.plist
-  - Atajo Shortcuts:     "Blink: llegada a casa"
-  - Directorio config:   ~/.config/blink/
+Key identifiers (search for these on the system):
+  - LaunchAgent label:   blink-geofence  (configurable in install-launchagent.sh)
+  - Config directory:    ~/.config/blink/
   - Logs:                ~/.config/blink/blink.log
 
-Comandos:
-    ./run.sh setup                        Auth interactiva (1 vez): email + password + 2FA.
-    ./run.sh targets [<nombre>...]        Sin args: muestra. Con args: configura sync modules.
-    ./run.sh set-home                     Guarda la MAC del router actual como "red de casa".
-    ./run.sh status                       Estado de sync modules + rearmado + guards.
-    ./run.sh arm                          Arma targets ahora.
-    ./run.sh disarm                       Desarma targets ahora.
-    ./run.sh disarm-for <horas>           Desarma + programa rearmado en N horas.
-    ./run.sh enforce-policy               (lo llama el LaunchAgent) Aplica guards: franja
-                                          nocturna 01:00-09:00, presencia fuera de casa, y
-                                          rearmado vencido → fuerza armado. Idempotente.
-    ./run.sh check-rearm                  (legacy) Solo el rearmado por tiempo, sin guards.
+Commands:
+    ./run.sh setup                Interactive auth (once): email + password + 2FA.
+    ./run.sh targets [<name>...]  No args: show. With args: set which sync modules to control.
+    ./run.sh set-home             Save the current router MAC as the "home network".
+    ./run.sh status               Sync module state + pending re-arm + guards.
+    ./run.sh arm                  Arm targets now.
+    ./run.sh disarm               Disarm targets now.
+    ./run.sh disarm-for <hours>   Disarm + schedule re-arm in N hours.
+    ./run.sh enforce-policy       (called by the LaunchAgent) Apply guards: night window,
+                                  away-from-home presence, and expired re-arm → force arm.
+                                  Idempotent.
+    ./run.sh check-rearm          (legacy) Time-based re-arm only, without guards.
+
+Settings (night window, default disarm hours) live in ~/.config/blink/config.json.
+This software is NOT affiliated with Amazon or Blink and relies on an unofficial
+API. Provided AS IS, with no warranty. Do not rely on it for life-safety or
+critical security. See README for the full disclaimer.
 """
 
 import asyncio
@@ -62,9 +65,12 @@ CONFIG_DIR = Path.home() / ".config" / "blink"
 SESSION_FILE = CONFIG_DIR / "session.json"
 
 # Lista de sync modules a controlar. Sin esto, arm/disarm fallan a propósito
-# (no queremos tocar TODOS los sync modules de la cuenta por accidente —
-# en particular, hay sync modules del Office que no deben tocarse).
+# (no queremos tocar TODOS los sync modules de la cuenta por accidente: una
+# cuenta Blink puede tener cámaras que NO quieres que este sistema toque).
 TARGETS_FILE = CONFIG_DIR / "targets.json"
+
+# Ajustes de usuario (franja nocturna, horas de desarmado por defecto).
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # Timestamp ISO de cuándo rearmar. Solo existe si hay un disarm-for activo.
 # El LaunchAgent lo lee cada 5 min y, si está vencido, arma + borra archivo.
@@ -80,15 +86,37 @@ HOME_NETWORK_FILE = CONFIG_DIR / "home_network.json"
 LOG_FILE = CONFIG_DIR / "blink.log"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Política de guards (overrides que FUERZAN armado)
+# Ajustes de usuario (config.json) y política de guards
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Franja nocturna: entre estas horas (local) las cámaras se fuerzan armadas
-# pase lo que pase, anulando cualquier disarm-for activo. Vigilancia mientras
-# se duerme. Alineada con el schedule nativo de Blink (Arm 01:00), que es el
-# backstop robusto cuando el Mac está dormido (ver HANDOFF).
-FORCED_ARM_START = time(1, 0)   # 01:00
-FORCED_ARM_END = time(9, 0)     # 09:00
+# Defaults sensatos. Se sobrescriben con ~/.config/blink/config.json si existe.
+# La franja nocturna fuerza armado entre night_start y night_end (hora local),
+# anulando cualquier disarm-for activo (vigilancia mientras duermes). Conviene
+# alinearla con un schedule nativo "Arm" en la app Blink, que es el backstop
+# robusto cuando el Mac está dormido (ver README).
+DEFAULT_SETTINGS = {
+    "night_start": "01:00",
+    "night_end": "09:00",
+    "disarm_hours": 5,
+}
+
+
+def _parse_hhmm(value: str) -> time:
+    """'HH:MM' → datetime.time."""
+    h, m = (int(x) for x in value.split(":"))
+    return time(h, m)
+
+
+def _load_settings() -> dict:
+    """Ajustes de usuario, con defaults si no hay config.json o falta una clave."""
+    settings = dict(DEFAULT_SETTINGS)
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE) as f:
+                settings.update(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            pass  # config corrupta → defaults seguros
+    return settings
 
 
 def _setup_logging():
@@ -294,7 +322,7 @@ async def cmd_set_armed(armed: bool):
     label = "armed" if armed else "disarmed"
 
     # Sin targets configurados, fallamos en vez de tocar todos los sync modules
-    # de la cuenta (que incluyen los del Office, que NO deben tocarse).
+    # de la cuenta (podría haber cámaras que NO quieres que este sistema toque).
     targets = _load_targets()
     if targets is None:
         raise SystemExit(
@@ -355,12 +383,15 @@ async def cmd_status():
             print(f"\nRearmado programado: {local:%Y-%m-%d %H:%M} (vencido — pendiente enforce-policy)")
 
     # Estado de los guards (overrides que fuerzan armado).
+    settings = _load_settings()
+    night_start = _parse_hhmm(settings["night_start"])
+    night_end = _parse_hhmm(settings["night_end"])
     now_t = datetime.now().time()
-    in_window = FORCED_ARM_START <= now_t < FORCED_ARM_END
+    in_window = night_start <= now_t < night_end
     home = _is_home()
     home_txt = {True: "en casa", False: "FUERA de casa", None: "sin huella (set-home)"}[home]
     print("\nGuards:")
-    print(f"  Franja nocturna {FORCED_ARM_START:%H:%M}-{FORCED_ARM_END:%H:%M}: "
+    print(f"  Franja nocturna {night_start:%H:%M}-{night_end:%H:%M}: "
           f"{'ACTIVA (forzaría armado)' if in_window else 'inactiva'}")
     print(f"  Presencia: {home_txt}"
           + ("  → forzaría armado" if home is False else ""))
@@ -394,7 +425,8 @@ async def cmd_check_rearm():
     """
     Idempotente, silencioso si no hay nada que hacer.
 
-    Ejecutado cada 5 min por el LaunchAgent blink-geofence.
+    (Legacy) El LaunchAgent ahora usa enforce-policy; este comando solo cubre
+    el rearmado por tiempo, sin los guards de franja nocturna ni presencia.
     Si rearm_at existe Y ya pasó, arma targets y borra el archivo.
     En cualquier otro caso, sale sin hacer ruido (no spam de logs ni notifs).
     """
@@ -430,15 +462,18 @@ def _policy_reason() -> str | None:
     Decide si las cámaras DEBEN forzarse armadas y por qué. None = no forzar.
 
     Prioridad (de mayor a menor):
-      1) franja-nocturna  → dentro de 01:00-09:00 local.
+      1) franja-nocturna  → dentro de la franja night_start-night_end (config).
       2) fuera-de-casa    → hay huella de casa y NO estamos en ella.
       3) rearmado-vencido → el disarm-for activo ya cumplió su plazo.
 
     Si ninguna aplica, devuelve None y se respeta el desarmado en curso.
     """
+    settings = _load_settings()
+    night_start = _parse_hhmm(settings["night_start"])
+    night_end = _parse_hhmm(settings["night_end"])
     now_t = datetime.now().time()
-    # La franja puede no cruzar medianoche (01:00 < 09:00), comparación directa.
-    if FORCED_ARM_START <= now_t < FORCED_ARM_END:
+    # La franja no cruza medianoche por defecto (start < end), comparación directa.
+    if night_start <= now_t < night_end:
         return "franja-nocturna"
 
     home = _is_home()

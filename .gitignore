@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Local agent/session artifacts — never publish
+.claude/
+HANDOFF.md
+ULTIMACONVERSACION.md

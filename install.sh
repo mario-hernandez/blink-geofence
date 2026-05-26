@@ -1,37 +1,39 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# install.sh — bootstrap del proyecto en una máquina nueva.
+# install.sh — bootstrap the project on a fresh machine.
 #
-# Crea .venv/ y instala blinkpy + aiohttp + certifi.
-# Idempotente: si ya hay venv, lo reusa.
+# Creates .venv/ and installs blinkpy + aiohttp + certifi.
+# Idempotent: reuses the venv if it already exists.
 #
-# Tras este script, ejecuta:
-#   ./run.sh setup            (auth interactiva con email + password + 2FA)
-#   ./run.sh targets "..."    (qué sync modules controlar)
-#   ./install-launchagent.sh  (rearmado automático)
+# After this script, run:
+#   ./run.sh setup            (interactive auth: email + password + 2FA)
+#   ./run.sh targets "..."    (which sync modules to control)
+#   ./run.sh set-home         (save your home router MAC, while on home Wi-Fi)
+#   ./install-launchagent.sh  (background enforcement every 5 min)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "Python 3 no encontrado. Instala con: brew install python@3.12" >&2
+    echo "Python 3 not found. Install with: brew install python@3.12" >&2
     exit 1
 fi
 
-echo "→ Creando venv en .venv/"
+echo "→ Creating venv in .venv/"
 python3 -m venv .venv
 
-echo "→ Instalando dependencias"
+echo "→ Installing dependencies"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
 chmod +x run.sh install-launchagent.sh 2>/dev/null || true
 
 echo ""
-echo "✓ Instalación lista."
+echo "✓ Install complete."
 echo ""
-echo "Siguientes pasos:"
-echo "    ./run.sh setup                    # auth interactiva, 1 vez"
-echo "    ./run.sh targets \"<NombreSync>\"   # qué sync modules controlar"
-echo "    ./install-launchagent.sh          # rearmado automático cada 5 min"
+echo "Next steps:"
+echo "    ./run.sh setup                  # interactive auth, once"
+echo "    ./run.sh targets \"<SyncName>\"   # which sync modules to control"
+echo "    ./run.sh set-home               # save home router MAC (on home Wi-Fi)"
+echo "    ./install-launchagent.sh        # background enforcement every 5 min"

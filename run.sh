@@ -1,29 +1,29 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-# run.sh — wrapper único para invocar blink_control.py
+# run.sh — single entry point for blink_control.py
 #
-# Este wrapper es el ÚNICO punto de entrada visible al sistema:
-#   - El atajo macOS "Blink: llegada a casa" lo llama con:
+# This wrapper is the only entry point the rest of the system uses:
+#   - The macOS Shortcuts automation calls it as:
 #         /path/to/blink-geofence/run.sh disarm-for 5
-#   - El LaunchAgent blink-geofence lo llama con:
-#         /path/to/blink-geofence/run.sh check-rearm
-#   - El usuario lo llama manualmente desde Terminal:
-#         ./run.sh status / arm / disarm / setup / targets / disarm-for / check-rearm
+#   - The LaunchAgent (blink-geofence) calls it as:
+#         /path/to/blink-geofence/run.sh enforce-policy
+#   - You call it manually from a terminal:
+#         ./run.sh status | arm | disarm | setup | targets | set-home | disarm-for | enforce-policy
 #
-# Responsabilidades:
-#   1) Asegurar cwd correcto (independiente de quién llama).
-#   2) Activar el venv (.venv/) — instalado por ./install.sh.
-#   3) Delegar argumentos a blink_control.py.
+# Responsibilities:
+#   1) Ensure the right working directory (regardless of caller).
+#   2) Activate the venv (.venv/) created by ./install.sh.
+#   3) Delegate arguments to blink_control.py.
 #
-# Por qué no usar /usr/bin/env python3 directamente: el venv tiene certifi y
-# blinkpy. El Python del sistema no.
+# Why not /usr/bin/env python3 directly: the venv carries certifi and blinkpy;
+# the system Python does not.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 if [ ! -d .venv ]; then
-    echo "venv no encontrado. Ejecuta primero: ./install.sh" >&2
+    echo "venv not found. Run ./install.sh first." >&2
     exit 1
 fi
 
