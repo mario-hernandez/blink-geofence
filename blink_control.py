@@ -27,7 +27,7 @@ Comandos:
     ./run.sh disarm                       Desarma targets ahora.
     ./run.sh disarm-for <horas>           Desarma + programa rearmado en N horas.
     ./run.sh enforce-policy               (lo llama el LaunchAgent) Aplica guards: franja
-                                          nocturna 02:00-09:00, presencia fuera de casa, y
+                                          nocturna 01:00-09:00, presencia fuera de casa, y
                                           rearmado vencido → fuerza armado. Idempotente.
     ./run.sh check-rearm                  (legacy) Solo el rearmado por tiempo, sin guards.
 """
@@ -85,9 +85,9 @@ LOG_FILE = CONFIG_DIR / "blink.log"
 
 # Franja nocturna: entre estas horas (local) las cámaras se fuerzan armadas
 # pase lo que pase, anulando cualquier disarm-for activo. Vigilancia mientras
-# se duerme. OJO: el enforcement local solo actúa con el Mac despierto; para
-# garantía total con el Mac dormido, ver el schedule nativo de Blink (HANDOFF).
-FORCED_ARM_START = time(2, 0)   # 02:00
+# se duerme. Alineada con el schedule nativo de Blink (Arm 01:00), que es el
+# backstop robusto cuando el Mac está dormido (ver HANDOFF).
+FORCED_ARM_START = time(1, 0)   # 01:00
 FORCED_ARM_END = time(9, 0)     # 09:00
 
 
@@ -430,14 +430,14 @@ def _policy_reason() -> str | None:
     Decide si las cámaras DEBEN forzarse armadas y por qué. None = no forzar.
 
     Prioridad (de mayor a menor):
-      1) franja-nocturna  → dentro de 02:00-09:00 local.
+      1) franja-nocturna  → dentro de 01:00-09:00 local.
       2) fuera-de-casa    → hay huella de casa y NO estamos en ella.
       3) rearmado-vencido → el disarm-for activo ya cumplió su plazo.
 
     Si ninguna aplica, devuelve None y se respeta el desarmado en curso.
     """
     now_t = datetime.now().time()
-    # La franja puede no cruzar medianoche (02:00 < 09:00), comparación directa.
+    # La franja puede no cruzar medianoche (01:00 < 09:00), comparación directa.
     if FORCED_ARM_START <= now_t < FORCED_ARM_END:
         return "franja-nocturna"
 

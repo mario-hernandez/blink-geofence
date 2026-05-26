@@ -11,7 +11,7 @@ Sistema local en este Mac (M2 Pro de Mario) que automatiza un caso muy concreto:
 - **Si Mario confirma**: desarma las cámaras y programa el rearmado automático.
 - **Pasadas las 5 h**: un servicio en background rearma las cámaras por su cuenta.
 - **Guards de seguridad** (overrides que fuerzan armado pese al desarmado):
-  - **Franja nocturna 02:00–09:00**: siempre armadas (vigilancia mientras duerme).
+  - **Franja nocturna 01:00–09:00**: siempre armadas (vigilancia mientras duerme).
   - **Fuera de casa**: si el Mac no está en la red de casa, siempre armadas.
 - **Las cámaras del Office (company) nunca se tocan.**
 
@@ -31,7 +31,7 @@ Sistema local en este Mac (M2 Pro de Mario) que automatiza un caso muy concreto:
 
 Cada 5 min el LaunchAgent ejecuta `enforce-policy`, que decide si forzar armado según esta prioridad:
 
-1. **¿Es 02:00–09:00 (local)?** → ARMAR (franja nocturna). Anula cualquier desarmado en curso.
+1. **¿Es 01:00–09:00 (local)?** → ARMAR (franja nocturna). Anula cualquier desarmado en curso.
 2. **¿Estamos fuera de casa?** (MAC del gateway ≠ `home_network.json`) → ARMAR (presencia). Anula desarmado.
 3. **¿Venció el disarm-for?** (`rearm_at` pasado) → ARMAR (rearmado por tiempo).
 4. Si nada aplica → no toca nada: respeta el desarmado legítimo (en casa, de día, dentro de las 5 h).
@@ -42,10 +42,10 @@ La detección de presencia usa la **MAC del router** y no el SSID porque macOS c
 
 Todo el enforcement (rearmado y guards) corre en el LaunchAgent de **este Mac**. launchd NO ejecuta el job mientras el Mac está en sleep profundo — lo ejecuta una vez al despertar. Consecuencias:
 
-- Si Mario desarma de noche y el Mac duerme antes de las 02:00, **la franja nocturna no se aplica hasta que el Mac despierte**.
-- Si Mario desarma, cierra el MacBook y se va, las cámaras quedan desarmadas hasta que el Mac despierte o venza el `rearm_at` (y este también necesita el Mac despierto).
+- Si Mario desarma de noche y el Mac duerme antes de la 01:00, **la franja nocturna del MacBook no se aplica hasta que el Mac despierte**.
+- Si Mario desarma, cierra el MacBook y se va, las cámaras quedarían desarmadas hasta que el Mac despierte o venza el `rearm_at`. **Esto lo cubre el backstop de abajo.**
 
-**Backstop recomendado (pendiente de configurar por Mario)**: crear en la **app Blink** un *schedule nativo* "Arm a las 02:00" para `Living Room`. Eso corre en la nube de Blink, independiente del Mac, y garantiza armado nocturno aunque el Mac esté apagado. blinkpy NO puede crear schedules por API (solo arma/desarma al momento), por eso este paso es manual en la app. Configurar solo el evento de *armado* (no el de desarmado, que lo controla este sistema).
+**Backstop configurado (por Mario, 2026-05-26)**: en la **app Blink** hay un *schedule nativo* "Arm a la 01:00" para `Living Room`. Corre en la nube de Blink, independiente del Mac, y garantiza armado nocturno aunque el Mac esté dormido o apagado. **Solo arma, no desarma** (el desarmado lo controla este sistema vía el atajo de llegada). La franja del MacBook (`FORCED_ARM_START = 01:00`) está alineada con este schedule. Nota: blinkpy NO puede crear/leer schedules por API, así que este evento solo se gestiona desde la app Blink.
 
 Todo el código del proyecto vive en **`~/Desarrollo/blink-setup-cameras/`** y está versionado en GitHub privado: `OWNER/blink-geofence`.
 
@@ -125,14 +125,16 @@ rm -rf ~/Desarrollo/blink-setup-cameras
 
 ### Implementado (sesión 2026-05-26)
 
-- ✅ **Horario forzado 02:00–09:00**: la franja nocturna fuerza armado y anula cualquier `disarm-for` activo. Constantes `FORCED_ARM_START` / `FORCED_ARM_END` en `blink_control.py`.
+- ✅ **Horario forzado 01:00–09:00**: la franja nocturna fuerza armado y anula cualquier `disarm-for` activo. Constantes `FORCED_ARM_START` / `FORCED_ARM_END` en `blink_control.py`.
 - ✅ **Presencia obligatoria fuera de casa**: detección por MAC del router (`set-home` + `home_network.json`). Si la MAC del gateway no coincide, fuerza armado.
 - ✅ **enforce-policy**: comando unificado que el LaunchAgent ejecuta cada 5 min (reemplazó a `check-rearm`).
 
+- ✅ **Schedule nativo Blink "Arm 01:00"** (configurado por Mario en la app, 2026-05-26): backstop nocturno robusto frente al Mac dormido. Solo arma, no desarma.
+
 ### Pendiente
 
-- ⏳ **Schedule nativo Blink "Arm 02:00"** (manual en la app): backstop nocturno robusto frente al Mac dormido. Ver sección "Limitación: el Mac dormido" arriba. Decisión de Mario pendiente.
-- 💡 Posible mejora: si se quiere desarmar automáticamente al despertar en casa (sin re-confirmar el diálogo), habría que añadir una regla "en casa + fuera de franja → desarmar". No pedido aún; el modelo actual es "desarmado opt-in vía diálogo de llegada".
+- ⏳ Verificar el trigger Wi-Fi del atajo "Blink: llegada a casa" (que apunte a `MyHomeWiFi` + "Ejecutar inmediatamente").
+- 💡 Posible mejora: si se quiere desarmar automáticamente al despertar en casa (sin re-confirmar el diálogo), habría que añadir una regla "en casa + fuera de franja → desarmar". No pedido aún; el modelo actual es "desarmado opt-in vía diálogo de llegada". Relevante porque el schedule de Blink arma a la 01:00 y no desarma, así que por la mañana en casa las cámaras siguen armadas hasta que Mario las desarme (atajo de llegada o manual).
 
 ## Contacto
 

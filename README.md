@@ -2,9 +2,9 @@
 
 > Si llegas al proyecto sin contexto, lee primero **[HANDOFF.md](HANDOFF.md)** — explica qué hay corriendo en el Mac, cómo verificarlo y cómo desinstalarlo. Este README es la guía de uso operativa.
 
-Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Dos **guards** fuerzan armado pese al desarmado: la **franja nocturna 02:00–09:00** y la **ausencia de casa** (Mac fuera de la red de casa). Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
+Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Dos **guards** fuerzan armado pese al desarmado: la **franja nocturna 01:00–09:00** y la **ausencia de casa** (Mac fuera de la red de casa). Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
 
-> ⚠️ Limitación: el enforcement corre en este Mac; si está en sleep profundo no se aplica hasta que despierte. Para garantía nocturna con el Mac apagado, ver el backstop recomendado en [HANDOFF.md](HANDOFF.md) (schedule nativo de Blink).
+> ⚠️ Limitación: el enforcement corre en este Mac; si está en sleep profundo no se aplica hasta que despierte. El backstop es un **schedule nativo de Blink "Arm 01:00"** (configurado en la app, corre en la nube), que garantiza el armado nocturno aunque el Mac esté dormido. Detalle en [HANDOFF.md](HANDOFF.md).
 
 ## Arquitectura
 
@@ -17,7 +17,7 @@ WiFi MyHomeWiFi detectado (trigger nativo de Shortcuts.app)
 
 LaunchAgent blink-geofence cada 5 minutos
    └─→ run.sh enforce-policy   (prioridad de arriba a abajo)
-         ├─→ ¿02:00-09:00?        → ARMA (anula desarmado)
+         ├─→ ¿01:00-09:00?        → ARMA (anula desarmado)
          ├─→ ¿fuera de casa?      → ARMA (anula desarmado)
          ├─→ ¿rearm_at vencido?   → ARMA + borra archivo
          └─→ nada aplica          → respeta el desarmado en curso
@@ -156,6 +156,6 @@ rm -rf ~/.config/blink
 | El rearmado no sucede a las 5h | LaunchAgent no cargado o sesión Blink caducada | `launchctl print gui/$UID/blink-geofence` para diagnosticar; mirar `launchagent.err` |
 | Sesión Blink caduca (raro, dura meses) | Token expiró | `./run.sh setup` de nuevo |
 | `status` dice "FUERA de casa" estando en casa | Cambiaste de router o la huella es vieja | `./run.sh set-home` conectado al WiFi de casa |
-| Se arma sola al instalar disarm-for | Estás en franja 02:00–09:00 o fuera de casa (guard correcto) | Es el comportamiento esperado; revisa `./run.sh status` → sección Guards |
+| Se arma sola al instalar disarm-for | Estás en franja 01:00–09:00 o fuera de casa (guard correcto) | Es el comportamiento esperado; revisa `./run.sh status` → sección Guards |
 | Quiero cambiar la franja nocturna | Horas hardcodeadas | Edita `FORCED_ARM_START`/`FORCED_ARM_END` en `blink_control.py` |
 | La franja nocturna no arma con el Mac dormido | launchd no corre en sleep profundo | Configura el schedule nativo de Blink (ver HANDOFF, sección "Mac dormido") |

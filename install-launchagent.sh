@@ -4,7 +4,7 @@
 #
 # Qué es: un servicio macOS (user-level launchd) que ejecuta
 # `run.sh enforce-policy` cada 5 minutos. Aplica los guards de seguridad:
-#   - Franja nocturna 02:00-09:00 → fuerza armado.
+#   - Franja nocturna 01:00-09:00 → fuerza armado.
 #   - Fuera de casa (MAC del router != casa) → fuerza armado.
 #   - disarm-for vencido → rearma.
 # Si nada de eso aplica, respeta un desarmado legítimo (en casa, de día).
