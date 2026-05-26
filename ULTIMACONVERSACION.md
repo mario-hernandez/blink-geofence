@@ -13,4 +13,6 @@ claude --resume da717ab1-1141-4522-b90f-67083c633f99
 
 ## Resumen
 
-Diseño e implementación del sistema completo de auto-disarm Blink al llegar a casa: `blink_control.py` con OAuth v2 + 2FA, atajo macOS Shortcuts.app (`Blink: llegada a casa`) sobre WiFi `MyHomeWiFi`, LaunchAgent `blink-geofence` para rearmado automático tras 5 h. Proyecto documentado en `HANDOFF.md`, repo privado en `OWNER/blink-geofence`. Pendiente próxima sesión: capa de "guards" (horario 02:00–09:00 siempre armado, presencia obligatoria fuera del WiFi de casa).
+Sistema completo de auto-disarm Blink al llegar a casa: `blink_control.py` con OAuth v2 + 2FA, atajo macOS Shortcuts.app (`Blink: llegada a casa`) sobre WiFi `MyHomeWiFi`, LaunchAgent `blink-geofence` que ejecuta `enforce-policy` cada 5 min. Guards implementados: franja nocturna 02:00–09:00 siempre armado + presencia (fuera de la red de casa, detectada por MAC del router, fuerza armado). Documentado en `HANDOFF.md`, repo privado `OWNER/blink-geofence`.
+
+Pendiente: (1) verificar el trigger Wi-Fi del atajo (apunta a `MyHomeWiFi` + "Ejecutar inmediatamente"); (2) backstop recomendado para el Mac dormido: schedule nativo "Arm 02:00" en la app Blink.
