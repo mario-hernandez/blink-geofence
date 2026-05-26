@@ -1,5 +1,7 @@
 # blink-setup-cameras
 
+![blink-setup-cameras](assets/hero.png)
+
 **Automatización local para armar/desarmar cámaras Blink según tu presencia en casa, con vigilancia nocturna forzada. 100% local: sin IFTTT, sin Alexa, sin servicios de terceros ni costes.**
 
 > Si llegas al proyecto sin contexto, lee primero **[HANDOFF.md](HANDOFF.md)** — explica qué hay corriendo en el Mac, cómo verificarlo y cómo desinstalarlo. Este README es la guía de uso operativa.
