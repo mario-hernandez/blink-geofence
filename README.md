@@ -1,5 +1,7 @@
 # blink-setup-cameras
 
+**Automatización local para armar/desarmar cámaras Blink según tu presencia en casa, con vigilancia nocturna forzada. 100% local: sin IFTTT, sin Alexa, sin servicios de terceros ni costes.**
+
 > Si llegas al proyecto sin contexto, lee primero **[HANDOFF.md](HANDOFF.md)** — explica qué hay corriendo en el Mac, cómo verificarlo y cómo desinstalarlo. Este README es la guía de uso operativa.
 
 Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Dos **guards** fuerzan armado pese al desarmado: la **franja nocturna 01:00–09:00** y la **ausencia de casa** (Mac fuera de la red de casa). Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
@@ -22,6 +24,20 @@ LaunchAgent blink-geofence cada 5 minutos
          ├─→ ¿rearm_at vencido?   → ARMA + borra archivo
          └─→ nada aplica          → respeta el desarmado en curso
 ```
+
+## Comportamiento en un día típico
+
+| Momento | Estado de `Living Room` | Quién lo decide |
+|---|---|---|
+| Llegas a casa (te unes al WiFi) | Diálogo "¿Desarmar 5h?" → si aceptas, **desarmado** | Atajo Shortcuts + MacBook |
+| En casa, de día | **desarmado** (sin notificaciones molestas) | — |
+| Sales de casa (dejas el WiFi) | **armado** (guard de presencia) | MacBook, si está despierto |
+| **01:00** | **armado** siempre | Blink (nube) + refuerzo MacBook |
+| 01:00–09:00 | **armado** siempre | Blink + MacBook |
+| Pasan las 5h de un desarmado | **armado** (rearmado) | MacBook, si está despierto |
+| Por la mañana en casa | sigue **armado** hasta que lo desarmes a mano | ver nota abajo |
+
+> **Nota de diseño**: el schedule de Blink arma a la 01:00 pero **no desarma**. Por la mañana, estando en casa, las cámaras siguen armadas y pueden darte notificaciones al moverte, hasta que las desarmes (el atajo solo salta al *unirte* al WiFi, no estando ya conectado). Desármalas a mano (`./run.sh disarm` o ejecutando el atajo manualmente) o pídeme que añada la regla "al despertar en casa → desarmar".
 
 ## Stack
 
