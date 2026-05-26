@@ -2,7 +2,9 @@
 
 > Si llegas al proyecto sin contexto, lee primero **[HANDOFF.md](HANDOFF.md)** — explica qué hay corriendo en el Mac, cómo verificarlo y cómo desinstalarlo. Este README es la guía de uso operativa.
 
-Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
+Cuando tu Mac M2 Pro detecta que te has conectado al WiFi de casa (`MyHomeWiFi`), te pregunta con un diálogo nativo si quieres desactivar las cámaras Blink `Living Room` durante 5 horas. Si aceptas, las desarma y un LaunchAgent local las rearma automáticamente cuando vence el plazo. Dos **guards** fuerzan armado pese al desarmado: la **franja nocturna 02:00–09:00** y la **ausencia de casa** (Mac fuera de la red de casa). Las cámaras del Office (`Office A`, `Office B`) nunca se tocan.
+
+> ⚠️ Limitación: el enforcement corre en este Mac; si está en sleep profundo no se aplica hasta que despierte. Para garantía nocturna con el Mac apagado, ver el backstop recomendado en [HANDOFF.md](HANDOFF.md) (schedule nativo de Blink).
 
 ## Arquitectura
 
@@ -14,8 +16,11 @@ WiFi MyHomeWiFi detectado (trigger nativo de Shortcuts.app)
                └─→ Escribe ~/.config/blink/rearm_at con timestamp +5h
 
 LaunchAgent blink-geofence cada 5 minutos
-   └─→ run.sh check-rearm
-         └─→ Si rearm_at venció: arma Living Room + borra archivo
+   └─→ run.sh enforce-policy   (prioridad de arriba a abajo)
+         ├─→ ¿02:00-09:00?        → ARMA (anula desarmado)
+         ├─→ ¿fuera de casa?      → ARMA (anula desarmado)
+         ├─→ ¿rearm_at vencido?   → ARMA + borra archivo
+         └─→ nada aplica          → respeta el desarmado en curso
 ```
 
 ## Stack
@@ -26,8 +31,9 @@ LaunchAgent blink-geofence cada 5 minutos
 | SSL | `certifi` (macOS Python no trae CA bundle) |
 | Trigger WiFi | `Shortcuts.app` nativa (sin daemons extra) |
 | Confirmación | Diálogo modal nativo (acción "Choose from Menu") |
-| Rearmado | LaunchAgent local, poll cada 5 min |
-| Storage | `~/.config/blink/` (session, targets, rearm_at, logs) |
+| Presencia | MAC del router vía `arp` (el SSID está censurado por macOS) |
+| Guards + rearmado | LaunchAgent local (`enforce-policy`), poll cada 5 min |
+| Storage | `~/.config/blink/` (session, targets, home_network, rearm_at, logs) |
 
 ## Setup local (este Mac, una vez)
 
@@ -44,14 +50,17 @@ cd ~/Desarrollo/blink-setup-cameras
 ./run.sh status                          # ver todos los sync modules
 ./run.sh targets "Living Room"      # solo este responderá al trigger
 
-# 4. Probar el ciclo manualmente
+# 4. Guardar la huella de la red de casa (ejecutar CONECTADO al WiFi de casa)
+./run.sh set-home                        # guarda la MAC del router como "casa"
+
+# 5. Probar el ciclo manualmente
 ./run.sh disarm-for 0.001                # desarma + rearmado a ~3.6s
-./run.sh status                          # muestra disarmed + rearmado pendiente
+./run.sh status                          # muestra disarmed + rearmado + guards
 sleep 5
-./run.sh check-rearm                     # detecta vencimiento, rearma
+./run.sh enforce-policy                  # aplica guards / rearmado
 ./run.sh status                          # vuelve a armed
 
-# 5. Instalar el LaunchAgent (rearmado automático a 5h)
+# 6. Instalar el LaunchAgent (enforce-policy cada 5 min)
 ./install-launchagent.sh
 ```
 
@@ -102,11 +111,13 @@ Si quieres probarlo sin esperar a llegar a casa: abre la app Shortcuts, busca tu
 |---|---|
 | `./run.sh setup` | Auth interactiva con Blink (email + password + 2FA) |
 | `./run.sh targets ["<nombre>" ...]` | Sin args: muestra targets. Con args: los sobreescribe. |
-| `./run.sh status` | Estado de todos los sync modules + rearmado pendiente si lo hay |
+| `./run.sh set-home` | Guarda la MAC del router actual como huella de la red de casa |
+| `./run.sh status` | Estado de sync modules + rearmado pendiente + estado de los guards |
 | `./run.sh arm` | Arma targets ahora |
 | `./run.sh disarm` | Desarma targets ahora |
 | `./run.sh disarm-for <horas>` | Desarma + programa rearmado en N horas |
-| `./run.sh check-rearm` | (interno, lo llama el LaunchAgent) Si rearm_at venció, rearma |
+| `./run.sh enforce-policy` | (interno, lo llama el LaunchAgent) Aplica guards: franja nocturna, presencia, rearmado |
+| `./run.sh check-rearm` | (legacy) Solo el rearmado por tiempo, sin guards |
 
 ## Archivos
 
@@ -114,6 +125,7 @@ Si quieres probarlo sin esperar a llegar a casa: abre la app Shortcuts, busca tu
 |---|---|
 | `~/.config/blink/session.json` | Sesión OAuth Blink (chmod 600) |
 | `~/.config/blink/targets.json` | Lista de sync modules controlados |
+| `~/.config/blink/home_network.json` | MAC del router de casa para detectar presencia |
 | `~/.config/blink/rearm_at` | Timestamp ISO de cuándo rearmar (existe solo si hay disarm-for activo) |
 | `~/.config/blink/blink.log` | Log de operaciones de blink_control.py |
 | `~/.config/blink/launchagent.{out,err}` | Stdout/stderr del LaunchAgent |
@@ -143,3 +155,7 @@ rm -rf ~/.config/blink
 | Atajo no dispara al unirse al WiFi | Permisos no aceptados o "Ejecutar inmediatamente" desactivado | Shortcuts.app → revisar la automatización |
 | El rearmado no sucede a las 5h | LaunchAgent no cargado o sesión Blink caducada | `launchctl print gui/$UID/blink-geofence` para diagnosticar; mirar `launchagent.err` |
 | Sesión Blink caduca (raro, dura meses) | Token expiró | `./run.sh setup` de nuevo |
+| `status` dice "FUERA de casa" estando en casa | Cambiaste de router o la huella es vieja | `./run.sh set-home` conectado al WiFi de casa |
+| Se arma sola al instalar disarm-for | Estás en franja 02:00–09:00 o fuera de casa (guard correcto) | Es el comportamiento esperado; revisa `./run.sh status` → sección Guards |
+| Quiero cambiar la franja nocturna | Horas hardcodeadas | Edita `FORCED_ARM_START`/`FORCED_ARM_END` en `blink_control.py` |
+| La franja nocturna no arma con el Mac dormido | launchd no corre en sleep profundo | Configura el schedule nativo de Blink (ver HANDOFF, sección "Mac dormido") |

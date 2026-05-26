@@ -3,8 +3,11 @@
 # install-launchagent.sh — instala/recarga el LaunchAgent de rearmado.
 #
 # Qué es: un servicio macOS (user-level launchd) que ejecuta
-# `run.sh check-rearm` cada 5 minutos. Si hay un disarm-for activo
-# y ya venció el plazo, arma los targets y borra el timestamp.
+# `run.sh enforce-policy` cada 5 minutos. Aplica los guards de seguridad:
+#   - Franja nocturna 02:00-09:00 → fuerza armado.
+#   - Fuera de casa (MAC del router != casa) → fuerza armado.
+#   - disarm-for vencido → rearma.
+# Si nada de eso aplica, respeta un desarmado legítimo (en casa, de día).
 #
 # Identificador completo (búscalo si dudas si está cargado):
 #   Label:    blink-geofence
@@ -47,7 +50,7 @@ cat > "$PLIST" <<EOF
     <key>ProgramArguments</key>
     <array>
         <string>$PROJECT_DIR/run.sh</string>
-        <string>check-rearm</string>
+        <string>enforce-policy</string>
     </array>
     <key>StartInterval</key>
     <integer>300</integer>

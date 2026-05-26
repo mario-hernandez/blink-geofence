@@ -21,20 +21,26 @@ Identificadores clave (búscalos en el sistema):
 Comandos:
     ./run.sh setup                        Auth interactiva (1 vez): email + password + 2FA.
     ./run.sh targets [<nombre>...]        Sin args: muestra. Con args: configura sync modules.
-    ./run.sh status                       Estado de todos los sync modules + rearmado pendiente.
+    ./run.sh set-home                     Guarda la MAC del router actual como "red de casa".
+    ./run.sh status                       Estado de sync modules + rearmado + guards.
     ./run.sh arm                          Arma targets ahora.
     ./run.sh disarm                       Desarma targets ahora.
     ./run.sh disarm-for <horas>           Desarma + programa rearmado en N horas.
-    ./run.sh check-rearm                  Si hay rearmado vencido, lo aplica. Idempotente.
+    ./run.sh enforce-policy               (lo llama el LaunchAgent) Aplica guards: franja
+                                          nocturna 02:00-09:00, presencia fuera de casa, y
+                                          rearmado vencido → fuerza armado. Idempotente.
+    ./run.sh check-rearm                  (legacy) Solo el rearmado por tiempo, sin guards.
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import ssl
+import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from getpass import getpass
 from pathlib import Path
 
@@ -64,8 +70,25 @@ TARGETS_FILE = CONFIG_DIR / "targets.json"
 # El LaunchAgent lo lee cada 5 min y, si está vencido, arma + borra archivo.
 REARM_FILE = CONFIG_DIR / "rearm_at"
 
+# Huella de la red de casa: la MAC del router (gateway). La usamos en vez del
+# SSID porque macOS reciente CENSURA el SSID (lo devuelve como "<redacted>")
+# sin permisos de Localización, pero la MAC del gateway vía ARP no está sujeta
+# a esa censura y es igual de única/estable.
+HOME_NETWORK_FILE = CONFIG_DIR / "home_network.json"
+
 # Log de operaciones (rotación manual si crece — bajo volumen, no urgente).
 LOG_FILE = CONFIG_DIR / "blink.log"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Política de guards (overrides que FUERZAN armado)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Franja nocturna: entre estas horas (local) las cámaras se fuerzan armadas
+# pase lo que pase, anulando cualquier disarm-for activo. Vigilancia mientras
+# se duerme. OJO: el enforcement local solo actúa con el Mac despierto; para
+# garantía total con el Mac dormido, ver el schedule nativo de Blink (HANDOFF).
+FORCED_ARM_START = time(2, 0)   # 02:00
+FORCED_ARM_END = time(9, 0)     # 09:00
 
 
 def _setup_logging():
@@ -114,6 +137,86 @@ def _save_targets(names: list[str]):
     with open(TARGETS_FILE, "w") as f:
         json.dump({"targets": names}, f, indent=2, ensure_ascii=False)
     os.chmod(TARGETS_FILE, 0o600)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Detección de red de casa (por MAC del gateway, no por SSID)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _normalize_mac(mac: str) -> str:
+    """Canoniza una MAC a 'aa:bb:cc:dd:ee:ff' (arp puede omitir el padding 0)."""
+    try:
+        return ":".join(f"{int(p, 16):02x}" for p in mac.split(":"))
+    except (ValueError, AttributeError):
+        return (mac or "").lower()
+
+
+def _gateway_mac() -> str | None:
+    """
+    MAC del router de la red actual, o None si no hay gateway (sin red).
+
+    route -n get default  → IP del gateway
+    arp -n <ip>           → MAC del gateway
+    Ambos son comandos del sistema, rápidos y sin permisos especiales.
+    """
+    try:
+        out = subprocess.run(
+            ["route", "-n", "get", "default"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        m = re.search(r"gateway:\s*([\d.]+)", out)
+        if not m:
+            return None
+        gw_ip = m.group(1)
+
+        arp_out = subprocess.run(
+            ["arp", "-n", gw_ip],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        mac = re.search(r"([0-9a-fA-F]{1,2}(?::[0-9a-fA-F]{1,2}){5})", arp_out)
+        return _normalize_mac(mac.group(1)) if mac else None
+    except Exception:
+        return None
+
+
+def _load_home_mac() -> str | None:
+    """MAC del router de casa guardada con `set-home`, o None si no configurada."""
+    if not HOME_NETWORK_FILE.exists():
+        return None
+    with open(HOME_NETWORK_FILE) as f:
+        return json.load(f).get("gateway_mac")
+
+
+def _is_home() -> bool | None:
+    """
+    True si estamos en la red de casa, False si no, None si no se puede decidir.
+
+    Devuelve None solo cuando NO hay huella de casa configurada — en ese caso
+    enforce-policy NO debe forzar armado por presencia (no sabe dónde estás).
+    Si hay huella pero no hay gateway actual (sin red), devuelve False (= fuera).
+    """
+    home = _load_home_mac()
+    if home is None:
+        return None
+    current = _gateway_mac()
+    if current is None:
+        return False  # sin red conocida → tratamos como "fuera de casa"
+    return _normalize_mac(current) == _normalize_mac(home)
+
+
+def cmd_set_home():
+    """Guarda la MAC del router actual como huella de la red de casa."""
+    mac = _gateway_mac()
+    if mac is None:
+        raise SystemExit(
+            "No se pudo detectar el gateway. ¿Estás conectado a la red de casa?"
+        )
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(HOME_NETWORK_FILE, "w") as f:
+        json.dump({"gateway_mac": mac}, f, indent=2)
+    os.chmod(HOME_NETWORK_FILE, 0o600)
+    print(f"✓ Red de casa guardada (MAC del router): {mac}")
+    print(f"  en {HOME_NETWORK_FILE}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -249,7 +352,21 @@ async def cmd_status():
             mins = int(remaining.total_seconds() // 60)
             print(f"\nRearmado programado: {local:%Y-%m-%d %H:%M} ({mins} min restantes)")
         else:
-            print(f"\nRearmado programado: {local:%Y-%m-%d %H:%M} (vencido — pendiente check-rearm)")
+            print(f"\nRearmado programado: {local:%Y-%m-%d %H:%M} (vencido — pendiente enforce-policy)")
+
+    # Estado de los guards (overrides que fuerzan armado).
+    now_t = datetime.now().time()
+    in_window = FORCED_ARM_START <= now_t < FORCED_ARM_END
+    home = _is_home()
+    home_txt = {True: "en casa", False: "FUERA de casa", None: "sin huella (set-home)"}[home]
+    print("\nGuards:")
+    print(f"  Franja nocturna {FORCED_ARM_START:%H:%M}-{FORCED_ARM_END:%H:%M}: "
+          f"{'ACTIVA (forzaría armado)' if in_window else 'inactiva'}")
+    print(f"  Presencia: {home_txt}"
+          + ("  → forzaría armado" if home is False else ""))
+    reason = _policy_reason()
+    print(f"  Veredicto enforce-policy: "
+          + (f"ARMAR ({reason})" if reason else "respeta estado actual"))
 
 
 async def cmd_disarm_for(hours: float):
@@ -299,6 +416,66 @@ async def cmd_check_rearm():
     print(f"✓ Rearmado tras vencer rearm_at = {rearm_at.isoformat()}")
 
 
+def _rearm_due() -> bool:
+    """True si hay un disarm-for activo cuyo plazo ya venció."""
+    if not REARM_FILE.exists():
+        return False
+    with open(REARM_FILE) as f:
+        rearm_at = datetime.fromisoformat(f.read().strip())
+    return datetime.now(timezone.utc) >= rearm_at
+
+
+def _policy_reason() -> str | None:
+    """
+    Decide si las cámaras DEBEN forzarse armadas y por qué. None = no forzar.
+
+    Prioridad (de mayor a menor):
+      1) franja-nocturna  → dentro de 02:00-09:00 local.
+      2) fuera-de-casa    → hay huella de casa y NO estamos en ella.
+      3) rearmado-vencido → el disarm-for activo ya cumplió su plazo.
+
+    Si ninguna aplica, devuelve None y se respeta el desarmado en curso.
+    """
+    now_t = datetime.now().time()
+    # La franja puede no cruzar medianoche (02:00 < 09:00), comparación directa.
+    if FORCED_ARM_START <= now_t < FORCED_ARM_END:
+        return "franja-nocturna"
+
+    home = _is_home()
+    # home is None → no hay huella configurada → no forzamos por presencia.
+    if home is False:
+        return "fuera-de-casa"
+
+    if _rearm_due():
+        return "rearmado-vencido"
+
+    return None
+
+
+async def cmd_enforce_policy():
+    """
+    Punto de entrada del LaunchAgent (cada 5 min). Idempotente y silencioso.
+
+    Evalúa la política de guards y, si procede, ARMA los targets. Reemplaza a
+    check-rearm: cubre el rearmado por tiempo Y los dos overrides (horario y
+    presencia). Cuando arma por un override, anula el disarm-for en curso
+    borrando rearm_at (el desarmado se considera consumido).
+
+    Si la política no exige armado, NO toca nada: respeta un desarmado legítimo
+    (en casa, de día, con disarm-for vigente).
+    """
+    reason = _policy_reason()
+    if reason is None:
+        log.info("enforce-policy: sin acción")
+        return
+
+    log.info("enforce-policy: armando por '%s'", reason)
+    await cmd_set_armed(True)
+    if REARM_FILE.exists():
+        REARM_FILE.unlink()
+    print(f"✓ Armado forzado por: {reason}")
+
+
 def cmd_targets(names: list[str]):
     """Sin args: muestra la config actual. Con args: la sobrescribe."""
     if not names:
@@ -344,6 +521,10 @@ def main():
             asyncio.run(cmd_disarm_for(float(sys.argv[2])))
         elif cmd == "check-rearm":
             asyncio.run(cmd_check_rearm())
+        elif cmd == "enforce-policy":
+            asyncio.run(cmd_enforce_policy())
+        elif cmd == "set-home":
+            cmd_set_home()
         elif cmd == "status":
             asyncio.run(cmd_status())
         elif cmd == "targets":
