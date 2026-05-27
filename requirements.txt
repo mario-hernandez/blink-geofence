@@ -1,2 +1,4 @@
-blinkpy>=0.23.0
+# blinkpy handles your Blink OAuth token, so it is pinned to an audited version.
+# Review the changelog before bumping: https://github.com/fronzbot/blinkpy/releases
+blinkpy==0.25.5
 aiohttp>=3.9.0
