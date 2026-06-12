@@ -48,9 +48,18 @@ from getpass import getpass
 from pathlib import Path
 
 import certifi
-from aiohttp import ClientSession, TCPConnector
+from aiohttp import ClientError, ClientSession, TCPConnector
 from blinkpy.auth import Auth, BlinkTwoFARequiredError
 from blinkpy.blinkpy import Blink
+
+
+class TransientNetworkError(Exception):
+    """Sin conectividad con Blink (DNS/red caída, típico tras boot/wake).
+
+    No es un fallo del programa: el LaunchAgent corre cada 5 min y la
+    siguiente pasada se recupera sola. main() lo reporta como aviso breve
+    (sin traceback) y sale con exit code 3 para distinguirlo en los logs.
+    """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -313,8 +322,30 @@ async def _load_blink(session):
         creds = json.load(f)
     blink = Blink(session=session)
     blink.auth = Auth(creds, no_prompt=True, session=session)
-    await blink.start()
-    return blink
+
+    # blink.start() sin red falla de dos formas: aiohttp lanza ClientError
+    # (p.ej. ClientConnectorDNSError si api.oauth.blink.com no resuelve), o
+    # blinkpy 0.25.5 se traga esa excepción internamente, su request devuelve
+    # None y validate_homescreen() revienta con AttributeError al hacer
+    # response.json() sobre None. Ambas significan lo mismo: red caída
+    # (típico justo tras boot/wake del Mac). Reintentamos con backoff corto
+    # y, si no hay manera, lo tipificamos como TransientNetworkError.
+    delays = (5, 15)  # 3 intentos: inmediato, +5s, +15s
+    for attempt, delay in enumerate((0, *delays)):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await blink.start()
+            return blink
+        except (ClientError, asyncio.TimeoutError, AttributeError) as exc:
+            last_exc = exc
+            log.warning(
+                "Sin conectividad con Blink (intento %d/%d): %r",
+                attempt + 1, len(delays) + 1, exc,
+            )
+    raise TransientNetworkError(
+        f"Sin red tras {len(delays) + 1} intentos: {last_exc!r}"
+    ) from last_exc
 
 
 async def cmd_set_armed(armed: bool):
@@ -569,6 +600,14 @@ def main():
             sys.exit(2)
     except SystemExit:
         raise
+    except TransientNetworkError as exc:
+        # Red caída (boot/wake, corte puntual): aviso breve sin traceback.
+        # El LaunchAgent reintenta en la próxima pasada (5 min) y se autocura.
+        log.warning("Error transitorio de red en %s: %s — se reintentará "
+                    "en la próxima ejecución", cmd, exc)
+        print(f"AVISO: sin conectividad con Blink ({cmd}). "
+              f"Se reintentará en la próxima ejecución.", file=sys.stderr)
+        sys.exit(3)
     except Exception as exc:
         # Tracebacks van al stderr Y al log: útil para debuggear el LaunchAgent
         # (cuyo stderr va a ~/.config/blink/launchagent.err) y para CLI manual.
